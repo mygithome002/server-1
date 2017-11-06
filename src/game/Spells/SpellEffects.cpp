@@ -339,10 +339,6 @@ void Spell::EffectSchoolDMG(SpellEffectIndex effect_idx)
         {
             case SPELLFAMILY_GENERIC:
             {
-                //Gore
-                if (m_spellInfo->SpellIconID == 2269)
-                    damage += (rand() % 2) ? damage : 0;
-
                 switch (m_spellInfo->Id)                    // better way to check unknown
                 {
                     // Meteor like spells (divided damage to targets)
@@ -405,6 +401,7 @@ void Spell::EffectSchoolDMG(SpellEffectIndex effect_idx)
                             damage = uint32(damage * 1.5f);
                         else
                             damage = uint32(damage / 1.5f);
+                        break;
                     }
                     case 27812: // Kel'Thuzad Void Blast
                     {
@@ -414,6 +411,7 @@ void Spell::EffectSchoolDMG(SpellEffectIndex effect_idx)
                         // this is a safetycheck.
                         if (unitTarget->HasAura(28410))
                             damage = 0;
+                        break;
                     }
                     case 24933:                             // Cannon (Darkmoon Steam Tonk)
                     {
@@ -489,6 +487,7 @@ void Spell::EffectSchoolDMG(SpellEffectIndex effect_idx)
                 // Hammer of Wrath - receive bonus from spell damage
                 if (m_spellInfo->SpellIconID == 42)
                 {
+                    m_attackType = BASE_ATTACK;    // Set as base attack to benefit from melee crit
                     damage = m_caster->SpellDamageBonusDone(unitTarget, m_spellInfo, damage, SPELL_DIRECT_DAMAGE);
                     damage = unitTarget->SpellDamageBonusTaken(m_caster, m_spellInfo, damage, SPELL_DIRECT_DAMAGE);
                 }
@@ -1651,50 +1650,6 @@ void Spell::EffectDummy(SpellEffectIndex eff_idx)
                 }
             }
             break;
-        /*
-        case SPELLFAMILY_ROGUE:
-        {
-            switch (m_spellInfo->Id)
-            {
-                case 5938:                                  // Shiv
-                {
-                    if (m_caster->GetTypeId() != TYPEID_PLAYER)
-                        return;
-
-                    Player *pCaster = ((Player*)m_caster);
-
-                    Item *item = pCaster->GetWeaponForAttack(OFF_ATTACK);
-                    if (!item)
-                        return;
-
-                    // all poison enchantments is temporary
-                    uint32 enchant_id = item->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT);
-                    if (!enchant_id)
-                        return;
-
-                    SpellItemEnchantmentEntry const *pEnchant = sSpellItemEnchantmentStore.LookupEntry(enchant_id);
-                    if (!pEnchant)
-                        return;
-
-                    for (int s = 0; s < 3; ++s)
-                    {
-                        if (pEnchant->type[s] != ITEM_ENCHANTMENT_TYPE_COMBAT_SPELL)
-                            continue;
-
-                        SpellEntry const* combatEntry = sSpellMgr.GetSpellEntry(pEnchant->spellid[s]);
-                        if (!combatEntry || combatEntry->Dispel != DISPEL_POISON)
-                            continue;
-
-                        m_caster->CastSpell(unitTarget, combatEntry, true, item);
-                    }
-
-                    m_caster->CastSpell(unitTarget, 5940, true);
-                    return;
-                }
-            }
-            break;
-        }
-        */
         case SPELLFAMILY_HUNTER:
         {
             switch (m_spellInfo->Id)
@@ -4128,17 +4083,6 @@ void Spell::EffectWeaponDmg(SpellEffectIndex eff_idx)
     // Seal of Command
     if (m_spellInfo->School == SPELL_SCHOOL_HOLY)
     {
-        // Prevent Vengeance double dipping
-        Unit::AuraList const& mModDamagePercentDone = m_caster->GetAurasByType(SPELL_AURA_MOD_DAMAGE_PERCENT_DONE);
-        for (Unit::AuraList::const_iterator i = mModDamagePercentDone.begin(); i != mModDamagePercentDone.end(); ++i)
-        {
-            if ((*i)->GetSpellProto()->SpellVisual == 6597)
-            {
-                bonus /= 1.0f + (*i)->GetModifier()->m_amount / 100.0f;
-                break;
-            }
-        }
-
         // Add spell gear bonus and spell modifiers
         bonus = m_caster->SpellDamageBonusDone(unitTarget, m_spellInfo, bonus, SPELL_DIRECT_DAMAGE);
         bonus = unitTarget->SpellDamageBonusTaken(m_caster, m_spellInfo, bonus, SPELL_DIRECT_DAMAGE);

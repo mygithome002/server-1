@@ -1024,6 +1024,32 @@ void Unit::Kill(Unit* pVictim, SpellEntry const *spellProto, bool durabilityLoss
                 if (group_tap->GetLooterGuid())
                 {
                     looter = ObjectAccessor::FindPlayer(group_tap->GetLooterGuid());
+
+                    // Master looter offline or on loading screen
+                    if (!looter && group_tap->GetLootMethod() == MASTER_LOOT)
+                    {
+                        // give master looter to the leader / assistants if possible, otherwise switch to group loot
+                        for (Group::member_citerator itr = group_tap->GetMemberSlots().begin(); itr != group_tap->GetMemberSlots().end(); ++itr)
+                        {
+                            if (itr->guid != group_tap->GetLooterGuid() && (itr->guid == group_tap->GetLeaderGuid() || itr->assistant))
+                                if (looter = ObjectAccessor::FindPlayer(itr->guid))
+                                    break;
+                        }
+
+                        if (!looter)
+                        {
+                            group_tap->SetLootMethod(GROUP_LOOT);
+                            group_tap->SetLootThreshold(ITEM_QUALITY_UNCOMMON);
+                            group_tap->UpdateLooterGuid(creature);
+                            looter = ObjectAccessor::FindPlayer(group_tap->GetLooterGuid());
+                        }
+                        else
+                        {
+                            group_tap->SetLooterGuid(looter->GetGUID());
+                            group_tap->SendUpdate();
+                        }
+                    }
+                    
                     if (looter)
                     {
                         creature->SetLootRecipient(looter);   // update creature loot recipient to the allowed looter.
@@ -4677,6 +4703,7 @@ void Unit::RemoveSpellAuraHolder(SpellAuraHolder *holder, AuraRemoveMode mode)
         sLog.outInfo("[Crash/Auras] Removing aura holder *not* in holders map ! Aura %u on %s", holder->GetId(), GetName());
     holder->SetRemoveMode(mode);
     holder->UnregisterSingleCastHolder();
+    holder->HandleCastOnAuraRemoval();
 
     for (int32 i = 0; i < MAX_EFFECT_INDEX; ++i)
     {
@@ -4704,21 +4731,6 @@ void Unit::RemoveSpellAuraHolder(SpellAuraHolder *holder, AuraRemoveMode mode)
     else
         delete holder;
 
-    uint32 uiTriggeredSpell = 0;
-
-    // Spell that trigger another spell on dispell
-    if (mode == AURA_REMOVE_BY_DISPEL)
-    {
-        switch (auraSpellId)
-        {
-        case 26180:    // Wyvern Sting (AQ40, Princess Huhuran)
-            uiTriggeredSpell = 26233;
-            break;
-        default:
-            break;
-        }
-    }
-
     if (isChanneled && caster)
     {
         Spell *channeled = caster->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
@@ -4731,14 +4743,6 @@ void Unit::RemoveSpellAuraHolder(SpellAuraHolder *holder, AuraRemoveMode mode)
             else
                 channeled->RemoveChanneledAuraHolder(holder, mode);
         }
-    }
-
-    if (uiTriggeredSpell)
-    {
-        if (caster)
-            caster->CastSpell(this, uiTriggeredSpell, true);
-        else
-            CastSpell(this, uiTriggeredSpell, true);
     }
 }
 

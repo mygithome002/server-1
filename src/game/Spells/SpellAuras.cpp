@@ -1771,10 +1771,7 @@ void Aura::HandleAuraDummy(bool apply, bool Real)
                 if (Unit* caster = GetCaster())
                     if (Player* casterPlayer = caster->ToPlayer())
                         if (Pet* guardian = caster->FindGuardianWithEntry(4277))
-                        {
-                            casterPlayer->ModPossessPet(guardian, false, AURA_REMOVE_BY_DEFAULT);
-                            guardian->DisappearAndDie();
-                        }
+                            guardian->DisappearAndDie(); // Removes mod posses
                 return;
             case 10255:                                     // Stoned
             {
@@ -1791,10 +1788,8 @@ void Aura::HandleAuraDummy(bool apply, bool Real)
                 if (Unit* caster = GetCaster())
                     if (Player* casterPlayer = caster->ToPlayer())
                         if (Pet* guardian = caster->FindGuardianWithEntry(7863))
-                        {
-                            casterPlayer->ModPossessPet(guardian, false, AURA_REMOVE_BY_DEFAULT);
                             guardian->DisappearAndDie();
-                        }
+
                 return;
             case 11826:
                 if (m_removeMode != AURA_REMOVE_BY_EXPIRE)
@@ -2309,6 +2304,12 @@ void Aura::HandleAuraModShapeshift(bool apply, bool Real)
             }
 
             break;
+        }
+        case FORM_BERSERKERSTANCE:
+        {
+            // do nothing when removing Nefarian warrior call
+            if (!apply && GetSpellProto()->Id == 23397)
+                return;
         }
         default:
             break;
@@ -2998,6 +2999,7 @@ void Player::ModPossessPet(Pet* pet, bool apply, AuraRemoveMode m_removeMode)
 
         pet->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED);
         pet->SetCharmerGuid(p_caster->GetObjectGuid());
+        pet->SetPossesorGuid(p_caster->GetObjectGuid());
 
         pet->StopMoving();
         pet->GetMotionMaster()->Clear(false);
@@ -3022,6 +3024,7 @@ void Player::ModPossessPet(Pet* pet, bool apply, AuraRemoveMode m_removeMode)
         camera.ResetView();
         pet->UpdateControl();
         pet->SetCharmerGuid(ObjectGuid());
+        pet->SetPossesorGuid(ObjectGuid());
 
         // To avoid moving the wrong unit on server side between cancellation and mover swap
         // the pet has the controlled state removed in WorldSession::HandleSetActiveMoverOpcode
@@ -3657,26 +3660,6 @@ void Aura::HandleAuraModSilence(bool apply, bool Real)
                 if (spell->m_spellInfo->PreventionType == SPELL_PREVENTION_TYPE_SILENCE)
                     // Stop spells on prepare or casting state
                     target->InterruptSpell(CurrentSpellTypes(i), false);
-
-        switch (GetId())
-        {
-            // Arcane Torrent (Energy)
-            case 25046:
-            {
-                Unit * caster = GetCaster();
-                if (!caster)
-                    return;
-
-                // Search Mana Tap auras on caster
-                Aura * dummy = caster->GetDummyAura(28734);
-                if (dummy)
-                {
-                    int32 bp = dummy->GetStackAmount() * 10;
-                    caster->CastCustomSpell(caster, 25048, &bp, nullptr, nullptr, true);
-                    caster->RemoveAurasDueToSpell(28734);
-                }
-            }
-        }
     }
     else
     {
@@ -4493,7 +4476,6 @@ void Aura::HandleAuraModIncreaseHealth(bool apply, bool Real)
     switch (GetId())
     {
         case 12976:                                         // Warrior Last Stand triggered spell
-        case 28726:                                         // Nightmare Seed ( Nightmare Seed )
         {
             if (Real)
             {
@@ -6451,6 +6433,39 @@ void SpellAuraHolder::HandleSpellSpecificBoosts(bool apply)
     }
 
     SetInUse(false);
+}
+
+void SpellAuraHolder::HandleCastOnAuraRemoval() const
+{
+    uint32 uiTriggeredSpell = 0;
+    AuraRemoveMode mode = GetRemoveMode();
+
+    switch (GetId())
+    {
+        case 26180:
+        {
+            if (mode == AURA_REMOVE_BY_DISPEL)
+                uiTriggeredSpell = 26233;        // Wyvern Sting (AQ40, Princess Huhuran)
+            break;
+        }
+        case 24002:
+        case 24003:
+        {
+            if (mode == AURA_REMOVE_BY_EXPIRE)
+                uiTriggeredSpell = 24004;        // Tranquilizing Poison (ZG, Razzashi Serpent)
+            break;
+        }
+        default:
+            return;
+    }
+
+    if (uiTriggeredSpell)
+    {
+        if (Unit* caster = GetCaster())
+            caster->CastSpell(GetTarget(), uiTriggeredSpell, true);
+        else
+            GetTarget()->CastSpell(GetTarget(), uiTriggeredSpell, true);
+    }
 }
 
 void Aura::HandleAuraSafeFall(bool Apply, bool Real)
