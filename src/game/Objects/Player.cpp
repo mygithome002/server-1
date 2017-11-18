@@ -83,6 +83,7 @@
 #include "PlayerBroadcaster.h"
 #include "GameEventMgr.h"
 #include "world/world_event_naxxramas.h"
+#include "world/world_event_wareffort.h"
 
 #define ZONE_UPDATE_INTERVAL (1*IN_MILLISECONDS)
 
@@ -472,6 +473,7 @@ Player::Player(WorldSession *session) : Unit(),
 
     mSemaphoreTeleport_Near = false;
     mSemaphoreTeleport_Far = false;
+    mPendingFarTeleport = false;
 
     m_DelayedOperations = 0;
     m_bCanDelayTeleport = false;
@@ -613,6 +615,12 @@ Player::~Player()
     // clean up player-instance binds, may unload some instance saves
     for (BoundInstancesMap::iterator itr = m_boundInstances.begin(); itr != m_boundInstances.end(); ++itr)
         itr->second.state->RemovePlayer(this);
+
+    // Cleanup delayed teleport if it was not executed before object deletion
+    // This shouldn't actually happen, but if someone does a bad we need to
+    // clean up anyway
+    sMapMgr.CancelDelayedPlayerTeleport(this);
+
     ASSERT(!m_groupInvite);
 }
 
@@ -1873,6 +1881,7 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
     if (!(options & TELE_TO_NOT_LEAVE_TRANSPORT) || !m_transport)
         m_movementInfo.RemoveMovementFlag(MOVEFLAG_ONTRANSPORT);
 
+    // Near teleport, let it happen immediately since we remain in the same map
     if ((GetMapId() == mapid) && (!m_transport) && !(options & TELE_TO_FORCE_MAP_CHANGE))
     {
         //lets reset far teleport flag if it wasn't reset during chained teleports
@@ -1937,7 +1946,6 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
     }
     else
     {
-        // far teleport to another map
         Map* oldmap = IsInWorld() ? GetMap() : NULL;
         // check if we can enter before stopping combat / removing pet / totems / interrupting spells
 
@@ -1946,8 +1954,6 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
         if (!sMapMgr.CanPlayerEnter(mapid, this))
             return false;
 
-        // If the map is not created, assume it is possible to enter it.
-        // It will be created in the WorldPortAck.
         DungeonPersistentState* state = GetBoundInstanceSaveForSelfOrGroup(mapid);
         uint32 instanceId = 0;
         if (state)
@@ -1955,129 +1961,152 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
         if (mapid <= 1)
             instanceId = sMapMgr.GetContinentInstanceId(mapid, x, y);
         Map *map = sMapMgr.FindMap(mapid, instanceId);
-        if (!map || map->CanEnter(this))
+        if (map && !map->CanEnter(this))
+            return false;
+
+        // Far teleport to another map. We can't do this right now since it means
+        // we need to remove from this map mid-update. Instead, schedule it for
+        // after updates are complete
+        ScheduledTeleportData *data = new ScheduledTeleportData(mapid, x, y, z, orientation, options, recover);
+
+        sMapMgr.ScheduleFarTeleport(this, data);
+    }
+    return true;
+}
+
+bool Player::ExecuteTeleportFar(ScheduledTeleportData *data)
+{
+    Map* oldmap = IsInWorld() ? GetMap() : NULL;
+    // check if we can enter before stopping combat / removing pet / totems / interrupting spells
+
+    // Check enter rights before map getting to avoid creating instance copy for player
+    // this check not dependent from map instance copy and same for all instance copies of selected map
+    uint32 mapid = data->targetMapId;
+    if (!sMapMgr.CanPlayerEnter(mapid, this))
+        return false;
+
+    // If the map is not created, assume it is possible to enter it.
+    // It will be created in the WorldPortAck.
+    DungeonPersistentState* state = GetBoundInstanceSaveForSelfOrGroup(mapid);
+    uint32 instanceId = 0;
+    if (state)
+        instanceId = state->GetInstanceId();
+    if (mapid <= 1)
+        instanceId = sMapMgr.GetContinentInstanceId(mapid, data->x, data->y);
+    Map *map = sMapMgr.FindMap(mapid, instanceId);
+    if (!map || map->CanEnter(this))
+    {
+        //lets reset near teleport flag if it wasn't reset during chained teleports
+        SetSemaphoreTeleportNear(false);
+
+        SetSelectionGuid(ObjectGuid());
+        CombatStop();
+        ResetContestedPvP();
+        RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED);
+
+        // reset extraAttack counter
+        ResetExtraAttacks();
+
+        /*
+        * Fix exploit:
+        * 1. Use summoning ritual to teleport a player
+        * 2. The teleported player tp to homebind <- Should remove teleport invitation
+        * 3. And accepts teleport to come back to the instance
+        */
+        m_summon_expire = 0;
+
+        // remove player from battleground on far teleport (when changing maps)
+        if (BattleGround const* bg = GetBattleGround())
         {
-            //lets reset near teleport flag if it wasn't reset during chained teleports
-            SetSemaphoreTeleportNear(false);
-            //setup delayed teleport flag
-            //if teleport spell is casted in Unit::Update() func
-            //then we need to delay it until update process will be finished
-            if (SetDelayedTeleportFlagIfCan())
+            // Note: at battleground join battleground id set before teleport
+            // and we already will found "current" battleground
+            // just need check that this is targeted map or leave
+            if (bg->GetMapId() != mapid)
+                LeaveBattleground(false);                   // don't teleport to entry point
+        }
+
+        // remove pet on map change
+        Pet* pet = GetPet();
+        if (pet)
+            UnsummonPetTemporaryIfAny();
+
+        // remove all dyn objects
+        RemoveAllDynObjects();
+
+        // stop spellcasting
+        // not attempt interrupt teleportation spell at caster teleport
+        if (!(data->options & TELE_TO_SPELL))
+            if (IsNonMeleeSpellCasted(true))
+                InterruptNonMeleeSpells(true);
+
+        //remove auras before removing from map...
+        RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_CHANGE_MAP | AURA_INTERRUPT_FLAG_MOVE | AURA_INTERRUPT_FLAG_TURNING);
+        RemoveCharmAuras();
+
+        if (!GetSession()->PlayerLogout())
+        {
+            // send transfer packet to display load screen
+            WorldPacket data(SMSG_TRANSFER_PENDING, (4 + 4 + 4));
+            data << uint32(mapid);
+            if (m_transport)
             {
-                SetSemaphoreTeleportFar(true);
-                //lets save teleport destination for player
-                m_teleport_dest = WorldLocation(mapid, x, y, z, orientation);
-                m_teleport_options = options;
-                m_teleportRecoverDelayed = recover;
-                return true;
+                data << uint32(m_transport->GetEntry());
+                data << uint32(GetMapId());
             }
+            GetSession()->SendPacket(&data);
+        }
 
-            SetSelectionGuid(ObjectGuid());
-            CombatStop();
-            ResetContestedPvP();
-            RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED);
+        // remove from old map now
+        if (oldmap)
+            oldmap->Remove(this, false);
 
-            // reset extraAttack counter
-            ResetExtraAttacks();
+        m_teleport_dest = WorldLocation(mapid, data->x, data->y, data->z, data->orientation);
+        DisableSpline();
+        SetFallInformation(0, data->z);
+        ScheduleDelayedOperation(DELAYED_CAST_HONORLESS_TARGET);
 
-            /*
-             * Fix exploit:
-             * 1. Use summoning ritual to teleport a player
-             * 2. The teleported player tp to homebind <- Should remove teleport invitation
-             * 3. And accepts teleport to come back to the instance
-             */
-            m_summon_expire = 0;
+        // if the player is saved before worldport ack (at logout for example)
+        // this will be used instead of the current location in SaveToDB
 
-            // remove player from battleground on far teleport (when changing maps)
-            if (BattleGround const* bg = GetBattleGround())
-            {
-                // Note: at battleground join battleground id set before teleport
-                // and we already will found "current" battleground
-                // just need check that this is targeted map or leave
-                if (bg->GetMapId() != mapid)
-                    LeaveBattleground(false);                   // don't teleport to entry point
-            }
+        // move packet sent by client always after far teleport
+        // code for finish transfer to new map called in WorldSession::HandleMoveWorldportAckOpcode at client packet
+        SetSemaphoreTeleportFar(true);
 
-            // remove pet on map change
-            if (pet)
-                UnsummonPetTemporaryIfAny();
-
-            // remove all dyn objects
-            RemoveAllDynObjects();
-
-            // stop spellcasting
-            // not attempt interrupt teleportation spell at caster teleport
-            if (!(options & TELE_TO_SPELL))
-                if (IsNonMeleeSpellCasted(true))
-                    InterruptNonMeleeSpells(true);
-
-            //remove auras before removing from map...
-            RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_CHANGE_MAP | AURA_INTERRUPT_FLAG_MOVE | AURA_INTERRUPT_FLAG_TURNING);
-            RemoveCharmAuras();
-            if (!GetSession()->PlayerLogout())
-            {
-                // send transfer packet to display load screen
-                WorldPacket data(SMSG_TRANSFER_PENDING, (4 + 4 + 4));
+        if (!GetSession()->PlayerLogout())
+        {
+            const auto wps = [this, mapid]() {
+                // transfer finished, inform client to start load
+                WorldPacket data(SMSG_NEW_WORLD, (20));
                 data << uint32(mapid);
                 if (m_transport)
                 {
-                    data << uint32(m_transport->GetEntry());
-                    data << uint32(GetMapId());
+                    data << m_movementInfo.GetTransportPos()->x;
+                    data << m_movementInfo.GetTransportPos()->y;
+                    data << m_movementInfo.GetTransportPos()->z;
+                    data << m_movementInfo.GetTransportPos()->o;
+                }
+                else
+                {
+                    data << m_teleport_dest.coord_x;
+                    data << m_teleport_dest.coord_y;
+                    data << m_teleport_dest.coord_z;
+                    data << m_teleport_dest.orientation;
                 }
                 GetSession()->SendPacket(&data);
-            }
-
-            // remove from old map now
-            if (oldmap)
-                oldmap->Remove(this, false);
-
-            m_teleport_dest = WorldLocation(mapid, x, y, z, orientation);
-            DisableSpline();
-            SetFallInformation(0, z);
-            ScheduleDelayedOperation(DELAYED_CAST_HONORLESS_TARGET);
-
-            // if the player is saved before worldport ack (at logout for example)
-            // this will be used instead of the current location in SaveToDB
-
-            // move packet sent by client always after far teleport
-            // code for finish transfer to new map called in WorldSession::HandleMoveWorldportAckOpcode at client packet
-            SetSemaphoreTeleportFar(true);
-
-            if (!GetSession()->PlayerLogout())
-            {
-                const auto wps = [this, mapid](){
-                    // transfer finished, inform client to start load
-                    WorldPacket data(SMSG_NEW_WORLD, (20));
-                    data << uint32(mapid);
-                    if (m_transport)
-                    {
-                        data << m_movementInfo.GetTransportPos()->x;
-                        data << m_movementInfo.GetTransportPos()->y;
-                        data << m_movementInfo.GetTransportPos()->z;
-                        data << m_movementInfo.GetTransportPos()->o;
-                    }
-                    else
-                    {
-                        data << m_teleport_dest.coord_x;
-                        data << m_teleport_dest.coord_y;
-                        data << m_teleport_dest.coord_z;
-                        data << m_teleport_dest.orientation;
-                    }
-                    GetSession()->SendPacket(&data);
-                    SendMovementMessageToSet(std::move(data), true);
-                    SendSavedInstances();
-                };
-                if (recover)
-                    m_teleportRecover = recover;
-                else
-                    m_teleportRecover = wps;
-                wps();
-            }
+                SendMovementMessageToSet(std::move(data), true);
+                SendSavedInstances();
+            };
+            if (data->recover)
+                m_teleportRecover = data->recover;
+            else
+                m_teleportRecover = wps;
+            wps();
         }
-        else
-            return false;
+
+        return true;
     }
-    return true;
+
+    return false;
 }
 
 void Player::restorePendingTeleport()
@@ -4759,6 +4788,13 @@ void Player::RepopAtGraveyard()
     else
         ClosestGrave = sObjectMgr.GetClosestGraveYard(GetPositionX(), GetPositionY(), GetPositionZ(), GetMapId(), GetTeam());
 
+    if (isAlive())
+    {
+        if (ClosestGrave)
+            TeleportTo(ClosestGrave->map_id, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, GetOrientation(), 0, std::move(recover));
+        return;
+    }
+
     // Interrupt resurrect spells
     InterruptSpellsCastedOnMe(false, true);
 
@@ -6697,6 +6733,9 @@ void Player::_ApplyItemBonuses(ItemPrototype const *proto, uint8 slot, bool appl
 
 void Player::_ApplyWeaponDependentAuraMods(Item *item, WeaponAttackType attackType, bool apply)
 {
+    if (apply && !CanUseEquippedWeapon(attackType))
+        return;
+
     AuraList const& auraCritList = GetAurasByType(SPELL_AURA_MOD_CRIT_PERCENT);
     for (AuraList::const_iterator itr = auraCritList.begin(); itr != auraCritList.end(); ++itr)
         _ApplyWeaponDependentAuraCritMod(item, attackType, *itr, apply);
@@ -7881,6 +7920,8 @@ void Player::SendInitWorldStates(uint32 zoneid)
         data << uint32(WORLDSTATE_SI_EASTERN_PLAGUELANDS) << uint32(REMAINING_EASTERN_PLAGUELANDS);
         data << uint32(WORLDSTATE_SI_TANARIS) << uint32(REMAINING_TANARIS);
         data << uint32(WORLDSTATE_SI_WINTERSPRING) << uint32(REMAINING_WINTERSPRING);
+
+        count += 13;
     }
 
     for (WorldStatePair const* itr = def_world_states; itr->state; ++itr)
@@ -7900,6 +7941,12 @@ void Player::SendInitWorldStates(uint32 zoneid)
             if (BattleGround* bg = GetBattleGround())
                 bg->FillInitialWorldStates(data, count);
             break;
+    }
+
+    // Ahn'Qiraj War Effort
+    if (sGameEventMgr.IsActiveEvent(EVENT_WAR_EFFORT))
+    {
+        count += BuildWarEffortWorldStates(data);
     }
 
     data << uint32(0) << uint32(0);     // [-ZERO] Add terminator to prevent repeating audio bug.
@@ -11639,6 +11686,13 @@ void Player::PrepareGossipMenu(WorldObject *pSource, uint32 menuId)
 
     // prepares quest menu when true
     bool canSeeQuests = menuId == GetDefaultGossipMenuForSource(pSource);
+
+    // If we're not a quest giver, don't show quests in the gossip
+    if (canSeeQuests && pSource->IsCreature() &&
+        !pSource->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER | UNIT_NPC_FLAG_BATTLEMASTER))
+    {
+        canSeeQuests = false;
+    }
 
     // if canSeeQuests (the default, top level menu) and no menu options exist for this, use options from default options
     if (pMenuItemBounds.first == pMenuItemBounds.second && canSeeQuests)
@@ -16387,7 +16441,7 @@ void Player::UpdatePvPFlag(time_t currTime)
 {
     if (!IsPvP())
         return;
-    if (pvpInfo.endTimer == 0 || currTime < (pvpInfo.endTimer + 300))
+    if (pvpInfo.endTimer == 0 || currTime < (pvpInfo.endTimer + 300) || pvpInfo.inHostileArea || HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_IN_PVP))
         return;
 
     UpdatePvP(false);
@@ -17496,10 +17550,8 @@ void Player::UpdatePvP(bool state, bool ovrride)
     }
     else
     {
-        if (pvpInfo.endTimer != 0)
-            pvpInfo.endTimer = time(NULL);
-        else
-            SetPvP(state);
+        pvpInfo.endTimer = time(NULL);
+        SetPvP(state);
     }
 }
 void Player::SetBattleGroundEntryPoint(uint32 mapId, float x, float y, float z, float o)
@@ -18379,11 +18431,15 @@ bool Player::HasQuestForGO(int32 GOId) const
     return false;
 }
 
-// Not multithreaded
 void Player::UpdateForQuestWorldObjects()
 {
+    // Don't process updates if we're not in the world (map is NULL)
+    if (!IsInWorld() || !FindMap())
+        return;
+
     uint32 count = 0;
     UpdateData upd;
+    m_visibleGUIDs_lock.acquire_read();
     for (ObjectGuidSet::const_iterator itr = m_visibleGUIDs.begin(); itr != m_visibleGUIDs.end(); ++itr)
     {
         if (itr->IsGameObject())
@@ -18397,6 +18453,7 @@ void Player::UpdateForQuestWorldObjects()
                     }
         }
     }
+    m_visibleGUIDs_lock.release();
     if (count)
         upd.Send(GetSession());
 }
@@ -18616,8 +18673,15 @@ void Player::RemoveItemDependentAurasAndCasts(Item * pItem)
     // currently casted spells can be dependent from item
     for (uint32 i = 0; i < CURRENT_MAX_SPELL; ++i)
         if (Spell* spell = GetCurrentSpell(CurrentSpellTypes(i)))
-            if (spell->getState() != SPELL_STATE_DELAYED && !HasItemFitToSpellReqirements(spell->m_spellInfo, pItem))
-                InterruptSpell(CurrentSpellTypes(i));
+            if (spell->getState() != SPELL_STATE_DELAYED)
+            {
+                if (!HasItemFitToSpellReqirements(spell->m_spellInfo, pItem))
+                    InterruptSpell(CurrentSpellTypes(i));
+                else
+                    for (int j = 0; j < MAX_ITEM_PROTO_SPELLS; ++j)
+                        if (itemProto->Spells[j].SpellId == spell->m_spellInfo->Id && itemProto->Spells[j].SpellTrigger == 0)
+                            InterruptSpell(CurrentSpellTypes(i));
+            }
 }
 
 uint32 Player::GetResurrectionSpellId()
@@ -19204,6 +19268,9 @@ void Player::AutoStoreLoot(Loot& loot, bool broadcast, uint8 bag, uint8 slot)
     for (uint32 i = 0; i < max_slot; ++i)
     {
         LootItem* lootItem = loot.LootItemInSlot(i, GetGUIDLow());
+        // Don't bypass conditions
+        if (lootItem->conditionId && !lootItem->AllowedForPlayer(this, loot.GetLootTarget()))
+            continue;
 
         ItemPosCountVec dest;
         InventoryResult msg = CanStoreNewItem(bag, slot, dest, lootItem->itemid, lootItem->count);

@@ -221,47 +221,6 @@ const uint32 HordeSoldierId[3] =
 ## npc_doctor (handles both Gustaf Vanhowzen and Gregory Victor)
 ######*/
 
-bool GossipHello_npc_doctor(Player* pPlayer, Creature* pCreature)
-{
-    if (pCreature->isQuestGiver())
-        pPlayer->PrepareQuestMenu(pCreature->GetObjectGuid());
-
-    if ((pPlayer->GetTeam() == ALLIANCE && pPlayer->GetQuestStatus(QUEST_TRIAGE_A) == QUEST_STATUS_COMPLETE) || (pPlayer->GetTeam() == HORDE && pPlayer->GetQuestStatus(QUEST_TRIAGE_H) == QUEST_STATUS_COMPLETE))
-    {
-        if (pPlayer->GetSkillValue(SKILL_FIRST_AID) >= 240 && !pPlayer->HasSpell(10841))
-            pPlayer->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, -3100005, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
-        if (pPlayer->GetSkillValue(SKILL_FIRST_AID) >= 260 && !pPlayer->HasSpell(18629))
-            pPlayer->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, -3100006, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 2);
-        if (pPlayer->GetSkillValue(SKILL_FIRST_AID) >= 290 && !pPlayer->HasSpell(18630))
-            pPlayer->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, -3100007, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 3);
-    }
-
-    pPlayer->SEND_GOSSIP_MENU(pPlayer->GetGossipTextId(pCreature), pCreature->GetObjectGuid());
-    return true;
-}
-
-bool GossipSelect_npc_doctor(Player* pPlayer, Creature* pCreature, uint32 uiSender, uint32 uiAction)
-{
-    pPlayer->PlayerTalkClass->ClearMenus();
-
-    switch (uiAction)
-    {
-    case GOSSIP_ACTION_INFO_DEF + 1:
-        pPlayer->CastSpell(pPlayer, 10843, true);
-        pPlayer->CLOSE_GOSSIP_MENU();
-        break;
-    case GOSSIP_ACTION_INFO_DEF + 2:
-        pPlayer->CastSpell(pPlayer, 18631, true);
-        pPlayer->CLOSE_GOSSIP_MENU();
-        break;
-    case GOSSIP_ACTION_INFO_DEF + 3:
-        pPlayer->CastSpell(pPlayer, 18632, true);
-        pPlayer->CLOSE_GOSSIP_MENU();
-        break;
-    }
-    return true;
-}
-
 struct npc_doctorAI : public ScriptedAI
 {
     npc_doctorAI(Creature* pCreature) : ScriptedAI(pCreature)
@@ -1518,8 +1477,8 @@ CreatureAI* GetAI_npc_gnomish_battle_chicken(Creature* pCreature)
 
 enum
 {
-    SPELL_Flame_Buffet = 9574,
-    SPELL_Flame_Breath = 20712
+    SPELL_FLAME_BUFFET = 9658,
+    SPELL_FLAME_BREATH = 8873
 };
 
 struct npc_arcanite_dragonlingAI : ScriptedPetAI
@@ -1527,53 +1486,36 @@ struct npc_arcanite_dragonlingAI : ScriptedPetAI
     explicit npc_arcanite_dragonlingAI(Creature* pCreature) : ScriptedPetAI(pCreature)
     {
         m_creature->SetCanModifyStats(true);
-
-        if (m_creature->GetCharmInfo())
-        {
-            if (sWorld.GetWowPatch() < WOW_PATCH_109)
-                m_creature->GetCharmInfo()->SetReactState(REACT_DEFENSIVE);
-            else 
-                m_creature->GetCharmInfo()->SetReactState(REACT_AGGRESSIVE);
-        }
-
-
-        m_firebuffetTimer = urand(0, 10000);
-        m_flamebreathTimer = urand(0, 20000);
-
+        m_creature->GetCharmInfo()->SetReactState(REACT_AGGRESSIVE);
         npc_arcanite_dragonlingAI::Reset();
     }
 
     uint32 m_firebuffetTimer;
     uint32 m_flamebreathTimer;
 
-
-    void Reset() override { }
-
-    void DamageTaken(Unit* pDoneBy, uint32 &uiDamage) override
-    {
-        ScriptedPetAI::DamageTaken(pDoneBy, uiDamage);
+    void Reset() override 
+    { 
+        m_firebuffetTimer = 5000;
+        m_flamebreathTimer = urand(10000, 60000);
     }
 
     void UpdatePetAI(const uint32 uiDiff) override
     {
         if (m_firebuffetTimer < uiDiff)
         {
-            if (DoCastSpellIfCan(m_creature->getVictim(), SPELL_Flame_Buffet) == CAST_OK)
-                m_firebuffetTimer = urand(5000, 10000);
+            if (DoCastSpellIfCan(m_creature->getVictim(), SPELL_FLAME_BUFFET) == CAST_OK)
+                m_firebuffetTimer = 22500;
         }
         else
             m_firebuffetTimer -= uiDiff;
 
         if (m_flamebreathTimer < uiDiff)
         {
-            int32 damage = 300;
-            m_creature->CastCustomSpell(m_creature->getVictim(), SPELL_Flame_Breath, &damage, nullptr, nullptr, true);
-            m_flamebreathTimer = urand(5000, 20000);
+            if (DoCastSpellIfCan(m_creature->getVictim(), SPELL_FLAME_BREATH) == CAST_OK)
+                m_flamebreathTimer = urand(10000, 60000);
         }
         else
             m_flamebreathTimer -= uiDiff;
-
-
 
         ScriptedPetAI::UpdatePetAI(uiDiff);
     }
@@ -3554,8 +3496,6 @@ void AddSC_npcs_special()
     newscript->GetAI = &GetAI_npc_doctor;
     newscript->pQuestAcceptNPC = &QuestAccept_npc_doctor;
     newscript->pQuestRewardedNPC = &QuestRewarded_npc_doctor;
-    newscript->pGossipHello = &GossipHello_npc_doctor;
-    newscript->pGossipSelect = &GossipSelect_npc_doctor;
     newscript->RegisterSelf();
 
     newscript = new Script;
