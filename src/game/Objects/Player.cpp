@@ -11685,17 +11685,19 @@ void Player::PrepareGossipMenu(WorldObject *pSource, uint32 menuId)
     GossipMenuItemsMapBounds pMenuItemBounds = sObjectMgr.GetGossipMenuItemsMapBounds(menuId);
 
     // prepares quest menu when true
-    bool canSeeQuests = menuId == GetDefaultGossipMenuForSource(pSource);
+    bool defaultMenu = menuId == GetDefaultGossipMenuForSource(pSource);
+    bool canSeeQuests = defaultMenu;
 
     // If we're not a quest giver, don't show quests in the gossip
-    if (canSeeQuests && pSource->IsCreature() &&
-        !pSource->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER | UNIT_NPC_FLAG_BATTLEMASTER))
+    if (canSeeQuests && (
+        (pSource->IsGameObject() && pSource->ToGameObject()->GetGOInfo()->type != GAMEOBJECT_TYPE_QUESTGIVER) ||
+        (pSource->IsCreature() && !pSource->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER))))
     {
         canSeeQuests = false;
     }
 
     // if canSeeQuests (the default, top level menu) and no menu options exist for this, use options from default options
-    if (pMenuItemBounds.first == pMenuItemBounds.second && canSeeQuests)
+    if (pMenuItemBounds.first == pMenuItemBounds.second && defaultMenu)
         pMenuItemBounds = sObjectMgr.GetGossipMenuItemsMapBounds(0);
 
     bool canTalkToCredit = pSource->GetTypeId() == TYPEID_UNIT;
@@ -12193,41 +12195,17 @@ void Player::SendPreparedQuest(ObjectGuid guid)
         {
             uint32 textid = sObjectMgr.GetNpcGossip(pCreature->GetGUIDLow());
 
-            GossipText const* gossiptext = sObjectMgr.GetGossipText(textid);
-            if (gossiptext)
+            NpcText const* gossiptext = sObjectMgr.GetNpcText(textid);
+            if (gossiptext && gossiptext->Options[0].BroadcastTextID)
             {
-                qe = gossiptext->Options[0].Emotes[0];
-
-                if (!gossiptext->Options[0].Text_0.empty())
+                if (BroadcastText const* bct = sObjectMgr.GetBroadcastTextLocale(gossiptext->Options[0].BroadcastTextID))
                 {
-                    title = gossiptext->Options[0].Text_0;
-                    
+                    qe._Emote = bct->EmoteId0;
+                    qe._Delay = bct->EmoteDelay0;
                     int loc_idx = GetSession()->GetSessionDbLocaleIndex();
-                    if (loc_idx >= 0)
-                    {
-                        NpcTextLocale const *nl = sObjectMgr.GetNpcTextLocale(textid);
-                        if (nl)
-                        {
-                            if ((int32)nl->Text_0[0].size() > loc_idx && !nl->Text_0[0][loc_idx].empty())
-                                title = nl->Text_0[0][loc_idx];
-                        }
-                    }
+                    title = bct->GetText(loc_idx, pCreature->getGender(), false);
                 }
-                else
-                {
-                    title = gossiptext->Options[0].Text_1;
-                    
-                    int loc_idx = GetSession()->GetSessionDbLocaleIndex();
-                    if (loc_idx >= 0)
-                    {
-                        NpcTextLocale const *nl = sObjectMgr.GetNpcTextLocale(textid);
-                        if (nl)
-                        {
-                            if ((int32)nl->Text_1[0].size() > loc_idx && !nl->Text_1[0][loc_idx].empty())
-                                title = nl->Text_1[0][loc_idx];
-                        }
-                    }
-                }
+                
             }
         }
         PlayerTalkClass->SendQuestGiverQuestList(qe, title, guid);
@@ -12303,7 +12281,7 @@ bool Player::CanSeeStartQuest(Quest const *pQuest) const
 
 bool Player::CanTakeQuest(Quest const *pQuest, bool msg, bool skipStatusCheck /*false*/) const
 {
-    if (pQuest->GetType() == QUEST_TYPE_PVP && pQuest->GetQuestLevel() && pQuest->GetQuestLevel() < getLevel())
+    if (pQuest->GetMaxLevel() && pQuest->GetMaxLevel() < getLevel())
         return false;
 
     return (skipStatusCheck || SatisfyQuestStatus(pQuest, msg)) && SatisfyQuestExclusiveGroup(pQuest, msg) &&
