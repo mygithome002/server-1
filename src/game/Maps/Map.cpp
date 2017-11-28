@@ -1384,33 +1384,29 @@ void Map::UpdateActiveObjectVisibility(Player *player)
 // Not compressed
 void Map::UpdateActiveObjectVisibility(Player *player, ObjectGuidSet &visibleGuids)
 {
-    for (m_activeNonPlayersIter = m_activeNonPlayers.begin(); m_activeNonPlayersIter != m_activeNonPlayers.end();)
+    for (auto iter = m_activeNonPlayers.cbegin(); iter != m_activeNonPlayers.cend(); ++iter)
     {
-        WorldObject *obj = *m_activeNonPlayersIter;
+        WorldObject *obj = *iter;
         if (obj->IsInWorld())
         {
             player->UpdateVisibilityOf(player->GetCamera().GetBody(), obj);
             visibleGuids.erase(obj->GetObjectGuid());
         }
-
-        ++m_activeNonPlayersIter;
     }
 }
 
 // Support for compressed data packet
 void Map::UpdateActiveObjectVisibility(Player *player, ObjectGuidSet &visibleGuids, UpdateData &data, std::set<WorldObject*> &visibleNow)
 {
-    for (m_activeNonPlayersIter = m_activeNonPlayers.begin(); m_activeNonPlayersIter != m_activeNonPlayers.end();)
+    for (auto iter = m_activeNonPlayers.cbegin(); iter != m_activeNonPlayers.cend(); ++iter)
     {
-        WorldObject *obj = *m_activeNonPlayersIter;
+        WorldObject *obj = *iter;
         if (obj->IsInWorld())
         {
             // TODO: Why is this templated? Why not just base class WorldObject for the target...?
             player->UpdateVisibilityOf(player->GetCamera().GetBody(), obj, data, visibleNow);
             visibleGuids.erase(obj->GetObjectGuid());
         }
-
-        ++m_activeNonPlayersIter;
     }
 }
 
@@ -2034,6 +2030,7 @@ void DungeonMap::UnloadAll(bool pForce)
             Player* plr = itr->getSource();
             ASSERT(plr->GetHomeBindMap() != GetId());
             plr->TeleportToHomebind();
+            plr->GetMapRef().unlink();
             itr = m_mapRefManager.begin();
         }
     }
@@ -2153,9 +2150,8 @@ void BattleGroundMap::UnloadAll(bool pForce)
         if (Player * plr = m_mapRefManager.getFirst()->getSource())
         {
             plr->TeleportTo(plr->GetBattleGroundEntryPoint());
-            // TeleportTo removes the player from this map (if the map exists) -> calls BattleGroundMap::Remove -> invalidates the iterator.
-            // just in case, remove the player from the list explicitly here as well to prevent a possible infinite loop
-            // note that this remove is not needed if the code works well in other places
+            // Far teleports may be delayed until the next map update. Remove the player from
+            // the list explicitly here to prevent an infinite loop
             plr->GetMapRef().unlink();
         }
     }
