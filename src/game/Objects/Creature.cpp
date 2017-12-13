@@ -600,7 +600,6 @@ void Creature::Update(uint32 update_diff, uint32 diff)
             break;
         case DEAD:
         {
-
             if (m_respawnTime <= time(nullptr) && (!m_isSpawningLinked || GetMap()->GetCreatureLinkingHolder()->CanSpawn(this)))
             {
                 DEBUG_FILTER_LOG(LOG_FILTER_AI_AND_MOVEGENSS, "Respawning...");

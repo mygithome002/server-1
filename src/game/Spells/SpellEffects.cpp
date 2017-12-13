@@ -1429,6 +1429,18 @@ void Spell::EffectDummy(SpellEffectIndex eff_idx)
                     }
                     return;
                 }
+                case 21343:                                 // Snowball Knockdown
+                {
+                    if (unitTarget && m_caster && unitTarget->IsPlayer() && m_caster->IsPlayer())
+                    {
+                        if (!unitTarget->HasAura(21354) &&                                      // Has no Snowball Resistant aura
+                            unitTarget->ToPlayer()->IsInSameGroupWith(m_caster->ToPlayer()))    // Is grouped with target
+                        {
+                            unitTarget->CastSpell(unitTarget, 21167, true);
+                        }
+                    }
+                    return;
+                }
             }
 
             //All IconID Check in there
@@ -4218,6 +4230,8 @@ void Spell::EffectInterruptCast(SpellEffectIndex eff_idx)
 
 void Spell::EffectSummonObjectWild(SpellEffectIndex eff_idx)
 {
+    // TODO: Objects summoned here should probably be _removed from the map_ once their
+    // duration has expired, rather than simply made invisible
     uint32 gameobject_id = m_spellInfo->EffectMiscValue[eff_idx];
 
     GameObject* pGameObj = new GameObject;
@@ -4747,6 +4761,21 @@ void Spell::EffectScriptEffect(SpellEffectIndex eff_idx)
                     if (unitTarget && m_caster)
                         m_caster->CastSpell(unitTarget, 28342, true);
                     return;
+                }
+                case 26532:                                 // Winter Veil summons
+                case 26541:
+                case 26469:
+                case 26528:
+                {
+                    if (Player* player = m_caster->ToPlayer())
+                    {
+                        // Remove minipet without consuming a snowball
+                        if (player->GetMiniPet())
+                        {
+                            player->RemoveMiniPet();
+                            return;
+                        }
+                    }
                 }
             }
             break;
