@@ -1434,7 +1434,7 @@ void Spell::EffectDummy(SpellEffectIndex eff_idx)
                     if (unitTarget && m_caster && unitTarget->IsPlayer() && m_caster->IsPlayer())
                     {
                         if (!unitTarget->HasAura(21354) &&                                      // Has no Snowball Resistant aura
-                            unitTarget->ToPlayer()->IsInSameGroupWith(m_caster->ToPlayer()))    // Is grouped with target
+                            unitTarget->ToPlayer()->IsInSameRaidWith(m_caster->ToPlayer()))     // Is grouped with target
                         {
                             unitTarget->CastSpell(unitTarget, 21167, true);
                         }
@@ -4629,8 +4629,12 @@ void Spell::EffectScriptEffect(SpellEffectIndex eff_idx)
                     // Prevent stacking of mounts
                     unitTarget->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
-                    // Two separate mounts depending on area id (allows use both in and out of specific instance)
-                    if (unitTarget->GetAreaId() == 3428)
+                    const MapEntry* mapEntry = sMapStorage.LookupEntry<MapEntry>(unitTarget->GetMapId());
+                    if (!mapEntry)
+                        return;
+
+                    // Two separate mount spells depending on if mounting is allowed or not
+                    if (!mapEntry->IsMountAllowed())
                         unitTarget->CastSpell(unitTarget, 25863, true, m_CastItem);
                     else
                         unitTarget->CastSpell(unitTarget, 26655, true, m_CastItem);
